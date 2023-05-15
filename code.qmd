@@ -1,0 +1,1066 @@
+---
+title: "Reproducible report: meta-analysis of the effect of fungicides on FHB and DON"
+format: 
+  html:
+    toc: true
+editor: visual
+editor_options: 
+  chunk_output_type: console
+execute:
+  freeze: auto
+  cache: true
+---
+
+
+
+
+```{r}
+#| warning: false
+#| message: false
+library(tidyverse)
+library(gsheet)
+```
+
+
+
+```{r}
+dat <- gsheet2tbl("https://docs.google.com/spreadsheets/d/1SxpX4w0rAdgZSNg3o9JB-9c83tMj7DIAdE_WwUq9a0A/edit?usp=sharing")
+n_trial <- dat %>% 
+  select(trial1) %>% 
+  unique() %>% 
+  mutate(trial2 = seq(1, n()))
+dat <- left_join(dat, n_trial)
+write_csv(dat, "raw_data.csv")
+dat1 <- dat %>% 
+  select(trial2, year_trial, state, fungicide, rep, don, inc, sev, ph, yld )
+
+```
+
+## Obtain mean per rep
+
+```{r}
+#| warning: false
+#| message: false
+dat2 <- dat1 %>% 
+  group_by(trial2, year_trial, rep, fungicide, state) %>% 
+  summarise(mean_don = mean(don),
+            mean_inc = mean(inc),
+            mean_sev = mean(sev),
+            mean_ph = mean(ph),
+            mean_yld = mean(yld))
+```
+
+## Select fungicides by number of entries
+
+```{r}
+dat2 %>% 
+  ungroup() %>% 
+  count(fungicide) %>% 
+  arrange(-n) 
+```
+
+
+## new data selected fungicides
+
+```{r}
+dat3 <- dat2 %>% 
+  filter(fungicide %in% c("Carbendazim", 
+                        "aacheck",
+                        "Piraclostrobina + metconazole",
+                        "Tebuconazole + trifloxistrobina",
+                        "Trifloxistrobina + protioconazole",
+                        "Trifloxistrobina + protioconazole + bixafem",
+                        "Metconazol"))
+
+```
+
+
+## new data with mse anova
+
+```{r}
+library(broom)
+mse <- dat3 %>% group_by(trial2) %>% 
+  do(tidy(aov(.$mean_don ~ .$fungicide + factor(.$rep)))) %>% 
+filter(term == "Residuals") %>% 
+  select(trial2, meansq)
+
+yld <- dat3 %>% 
+  group_by(trial2) %>% 
+  filter(mean_yld>0) %>% 
+  do(tidy(aov(.$mean_yld ~ .$fungicide + factor(.$rep)))) %>% 
+  filter(term == "Residuals") %>% 
+  select(trial2, meansq) %>% 
+set_names(c("trial2", "v_yld"))
+
+sev <- dat3 %>% 
+  group_by(trial2) %>%
+  filter(mean_sev>0) %>%
+  filter(mean_sev<100) %>% 
+  do(tidy(aov(.$mean_sev ~ .$fungicide + factor(.$rep)))) %>% 
+  filter(term == "Residuals") %>% 
+  select(trial2, meansq) %>% 
+  set_names(c("trial2", "v_sev"))
+
+dat4 <- left_join(dat3, mse) 
+dat4a = left_join(dat4,yld)
+dat4b = left_join(dat4a,sev)
+
+dat5 <- dat4b %>% 
+  group_by(trial2, year_trial, fungicide,state) %>% 
+  summarize(mean_don = mean(mean_don),
+            mean_var = mean(meansq),
+            mean_inc = mean(mean_inc),
+            mean_yld = mean(mean_yld),
+            mean_sev = mean(mean_sev),
+            v_sev = mean(v_sev),
+            v_yld = mean(v_yld))
+
+dat_DON <- dat5 |> 
+  mutate(yi = log(mean_don)) |> 
+  mutate(vi = mean_var/(4*mean_don^2)) |> 
+  filter(mean_don >0) %>% 
+  group_by(trial2) %>% 
+  mutate(n2 = n()) %>% 
+  filter(n2 != 1)
+  
+dat_sev = dat5 |> 
+  mutate(log_sev = log(mean_sev)) |>
+  mutate(vi_sev = mean_sev/(4*mean_sev^2)) |>
+  filter(mean_sev >0)%>% 
+  group_by(trial2) %>% 
+  mutate(n2 = n()) 
+
+dat_yld = dat5 |>
+  mutate(v_yld1 = v_yld/4)%>% 
+  group_by(trial2) %>% 
+  mutate(n2 = n()) %>% 
+  filter(n2 != 1)
+
+trials = dat_yld%>% 
+  group_by(trial2)
+length(unique(trials$trial2)) #19
+
+trials = dat_DON%>% 
+  group_by(trial2)
+length(unique(trials$trial2)) #15
+
+trials = dat_sev%>% 
+  group_by(trial2)
+length(unique(trials$trial2)) #15
+```
+
+```{r}
+#| warning: false
+#| message: false
+library(janitor) 
+a1 = dat_DON %>%
+  group_by(trial2,year_trial) %>% 
+  summarise() %>% 
+  tabyl(year_trial)
+a1
+```
+
+```{r}
+#| warning: false
+#| message: false
+
+a1 = dat_DON %>%
+  group_by(trial2,state) %>% 
+  summarise() %>% 
+  tabyl(state)
+a1
+```
+
+## Check columns 
+
+```{r, warning=FALSE}
+# these two columns will be used as moderator variables later
+check_DON = dat_DON %>% 
+  ungroup() %>% 
+  filter(fungicide == "aacheck")  %>% 
+  mutate(check = fungicide, sev_check = mean_sev, yld_check = mean_yld) %>% 
+  select(trial2, yld_check, sev_check)
+
+dat_DON = dat_DON %>% 
+  full_join(check_DON)
+summary(dat_DON$sev_check)
+
+dat_DON <- dat_DON %>%
+  mutate(sev_check_class = case_when(
+      sev_check < 13 ~ "low",
+      sev_check >= 13 ~ "high"))
+table(dat_DON$fungicide, dat_DON$sev_check_class)
+
+
+
+check_yld = dat_yld %>% 
+  ungroup() %>% 
+  filter(fungicide == "aacheck")  %>% 
+  mutate(check = fungicide, sev_check = mean_sev, yld_check = mean_yld) %>% 
+  select(trial2, yld_check, sev_check)
+dat_yld = dat_yld %>% 
+  full_join(check_yld)
+
+summary(dat_yld$sev_check)
+dat_yld <- dat_yld %>%
+  mutate(sev_check_class = case_when(
+      sev_check < 13 ~ "low",
+      sev_check >= 13 ~ "high"))
+table(dat_yld$fungicide, dat_yld$sev_check_class)
+
+```
+
+
+# Meta-analysis 
+
+## DON
+
+```{r}
+library(metafor)
+mv_don <- rma.mv(yi, vi,
+  mods = ~fungicide,
+  random = list(~fungicide | factor(trial2)),
+  struct = "UN",
+  method = "ML",
+  data = dat_DON
+)
+mv_don
+```
+
+```{r}
+efficacy_don <- data.frame(cbind(
+  (1 - exp(mv_don$b)) * 100,
+  (1 - exp(mv_don$ci.lb)) * 100,
+  (1 - exp(mv_don$ci.ub)) * 100))
+
+#Organize the data.frame
+efficacy_don = efficacy_don
+  names (efficacy_don) = c("efficacy", "efficacy_up", "efficacy_lw")
+  
+efficacy_don = efficacy_don %>% 
+  mutate(fungicide = c("check", "CARB", "METC", "PYRA+METC", "TEBU+TFLX","TFLX+PROT", "TFLX+PROT+BIXF")) %>% 
+  filter(fungicide != "check") %>% 
+  dplyr::select(fungicide, efficacy, efficacy_lw, efficacy_up) 
+
+rownames(efficacy_don) <- NULL
+efficacy_don
+```
+
+
+### Contrasts
+
+```{r}
+anova(mv_don, L = rbind(
+  c(0, 1,-1, 0, 0, 0, 0),
+  c(0, 1, 0,-1, 0, 0, 0),
+  c(0, 1, 0, 0,-1, 0, 0),
+  c(0, 1, 0, 0, 0,-1, 0),
+  c(0, 1, 0, 0, 0, 0,-1),
+  c(0, 0, 1,-1, 0, 0, 0),
+  c(0, 0, 1, 0,-1, 0, 0),
+  c(0, 0, 1, 0, 0,-1, 0),
+  c(0, 0, 1, 0, 0, 0,-1),
+  c(0, 0, 0, 1,-1, 0, 0),
+  c(0, 0, 0, 1, 0,-1, 0),
+  c(0, 0, 0, 1, 0, 0,-1),
+  c(0, 0, 0, 0, 1,-1, 0),
+  c(0, 0, 0, 0, 1, 0,-1),
+  c(0, 0, 0, 0, 0, 1,-1)))
+
+```
+
+### State
+
+```{r}
+#| warning: false
+#| message: false
+library(metafor)
+mv_state <- rma.mv(yi, vi,
+  mods = ~fungicide*state,
+  random = list(~fungicide | factor(trial2)),
+  struct = "UN",
+  method = "ML",
+  data = dat_DON
+)
+mv_state
+
+anova(mv_state, btt=9:14)
+
+```
+### Disease Pressure
+
+```{r}
+library(metafor)
+mv_check_class <- rma.mv(yi, vi,
+  mods = ~fungicide*sev_check_class,
+  random = list(~fungicide | factor(trial2)),
+  struct = "UN",
+  method = "ML",
+  data = dat_DON
+)
+mv_check_class
+
+anova(mv_check_class, btt=9:14)
+
+```
+
+
+## Yield (kg/ha)
+
+```{r}
+
+library(metafor)
+
+mv_yld <- rma.mv(mean_yld, v_yld1,
+  mods = ~fungicide,
+  random = list(~fungicide | factor(trial2)),
+  struct = "UN",
+  method = "ML",
+  control = list(optimizer = "nlm"),
+  data = dat_yld
+)
+mv_yld
+```
+
+```{r}
+yield_res<- data.frame(cbind(mv_yld$b, 
+                             mv_yld$ci.lb,
+                             mv_yld$ci.ub)) %>% 
+  set_names("yld", "yld_inf", "yld_sup") %>% 
+  mutate(fungicide = c("check", "CARB", "METC", "PYRA+METC", "TEBU+TFLX","TFLX+PROT", "TFLX+PROT+BIXF")) %>% 
+  filter(fungicide != "check") 
+yield_res
+```
+
+### Contrasts
+
+```{r}
+anova(mv_yld, L = rbind(
+  c(0, 1,-1, 0, 0, 0, 0),
+  c(0, 1, 0,-1, 0, 0, 0),
+  c(0, 1, 0, 0,-1, 0, 0),
+  c(0, 1, 0, 0, 0,-1, 0),
+  c(0, 1, 0, 0, 0, 0,-1),
+  c(0, 0, 1,-1, 0, 0, 0),
+  c(0, 0, 1, 0,-1, 0, 0),
+  c(0, 0, 1, 0, 0,-1, 0),
+  c(0, 0, 1, 0, 0, 0,-1),
+  c(0, 0, 0, 1,-1, 0, 0),
+  c(0, 0, 0, 1, 0,-1, 0),
+  c(0, 0, 0, 1, 0, 0,-1),
+  c(0, 0, 0, 0, 1,-1, 0),
+  c(0, 0, 0, 0, 1, 0,-1),
+  c(0, 0, 0, 0, 0, 1,-1)))
+
+```
+### Disease Pressure
+
+```{r}
+library(metafor)
+mv_check_class <- rma.mv(mean_yld, v_yld1,
+  mods = ~fungicide*sev_check_class,
+  random = list(~fungicide | factor(trial2)),
+  struct = "UN",
+  method = "ML",
+  control = list(optimizer = "nlm"),
+  data = dat_yld
+)
+mv_check_class
+
+anova(mv_check_class, btt=9:14)
+
+```
+
+## Severity
+
+```{r}
+library(metafor)
+mv_sev <- rma.mv(log_sev, vi_sev,
+  mods = ~fungicide,
+  random = list(~fungicide | factor(trial2)),
+  struct = "UN",
+  method = "ML",
+  data = dat_sev
+)
+mv_sev
+```
+
+```{r}
+efficacy_sev <- data.frame(cbind(
+  (1 - exp(mv_sev$b)) * 100,
+  (1 - exp(mv_sev$ci.lb)) * 100,
+  (1 - exp(mv_sev$ci.ub)) * 100))
+
+#Organize the data.frame
+efficacy_sev = efficacy_sev
+  names (efficacy_sev) = c("efficacy", "efficacy_up", "efficacy_lw")
+  
+efficacy_sev = efficacy_sev %>% 
+  mutate(fungicide = c("check", "CARB", "METC", "PYRA+METC", "TEBU+TFLX","TFLX+PROT", "TFLX+PROT+BIXF")) %>% 
+  filter(fungicide != "check") %>% 
+  dplyr::select(fungicide, efficacy, efficacy_lw, efficacy_up) 
+
+rownames(efficacy_sev) <- NULL
+efficacy_sev
+```
+
+### Contrasts
+
+```{r}
+anova(mv_sev, L = rbind(
+  c(0, 1,-1, 0, 0, 0, 0),
+  c(0, 1, 0,-1, 0, 0, 0),
+  c(0, 1, 0, 0,-1, 0, 0),
+  c(0, 1, 0, 0, 0,-1, 0),
+  c(0, 1, 0, 0, 0, 0,-1),
+  c(0, 0, 1,-1, 0, 0, 0),
+  c(0, 0, 1, 0,-1, 0, 0),
+  c(0, 0, 1, 0, 0,-1, 0),
+  c(0, 0, 1, 0, 0, 0,-1),
+  c(0, 0, 0, 1,-1, 0, 0),
+  c(0, 0, 0, 1, 0,-1, 0),
+  c(0, 0, 0, 1, 0, 0,-1),
+  c(0, 0, 0, 0, 1,-1, 0),
+  c(0, 0, 0, 0, 1, 0,-1),
+  c(0, 0, 0, 0, 0, 1,-1)))
+
+```
+
+## Design groups
+
+### DON
+
+```{r}
+dat_DON1 = dat_DON %>% 
+  group_by(trial2) %>% 
+  summarise(fungicide1=paste(fungicide, collapse=';')) 
+
+dat_DON1 %>% 
+  tabyl(fungicide1)
+```
+Five different designs (here design refers to the set of treatments in the trial) were found in the trials reporting DON.
+
+```{r}
+design1 = dat_DON %>% 
+  group_by(trial2) %>% 
+  filter(fungicide  %in% c("aacheck", "Carbendazim", "Metconazol", "Piraclostrobina + metconazole", "Tebuconazole + trifloxistrobina", "Trifloxistrobina + protioconazole")) %>% 
+  mutate(n3 = n()) %>% 
+  mutate(design = rep(1, length(fungicide))) %>% 
+  filter(n2 == 6) %>%
+  filter(n3 == 6)
+design1
+
+
+design2 = dat_DON %>% 
+  group_by(trial2) %>% 
+  filter(fungicide  %in% c("aacheck", "Carbendazim", "Metconazol", "Piraclostrobina + metconazole", "Tebuconazole + trifloxistrobina", "Trifloxistrobina + protioconazole + bixafem")) %>% 
+  mutate(n3 = n()) %>% 
+  mutate(design = rep(2, length(fungicide))) %>% 
+  filter(n2 == 6) %>%
+  filter(n3 == 6)
+design2
+
+design3 = dat_DON %>% 
+  group_by(trial2) %>% 
+  filter(fungicide  %in% c("aacheck", "Carbendazim", "Metconazol", "Piraclostrobina + metconazole", "Tebuconazole + trifloxistrobina", "Trifloxistrobina + protioconazole", "Trifloxistrobina + protioconazole + bixafem")) %>% 
+  mutate(n3 = n()) %>% 
+  mutate(design = rep(3, length(fungicide))) %>% 
+  filter(n2 == 7) %>% 
+  filter(n3 == 7)
+design3
+
+design4 = dat_DON %>% 
+  group_by(trial2) %>% 
+  filter(fungicide  %in% c("aacheck", "Carbendazim", "Piraclostrobina + metconazole", "Tebuconazole + trifloxistrobina", "Trifloxistrobina + protioconazole")) %>% 
+  mutate(n3 = n()) %>% 
+  mutate(design = rep(4, length(fungicide))) %>% 
+  filter(n2 == 5) %>% 
+  filter(n3 == 5)
+design4
+
+design5 = dat_DON %>% 
+  group_by(trial2) %>% 
+  filter(fungicide  %in% c("aacheck", "Carbendazim", "Tebuconazole + trifloxistrobina", "Trifloxistrobina + protioconazole + bixafem")) %>% 
+  mutate(n3 = n()) %>% 
+  mutate(design = rep(5, length(fungicide))) %>% 
+  filter(n2 == 4) %>% 
+  filter(n3 == 4)
+design5
+
+DON_design = rbind(design1, design2, design3, design4, design5)
+
+
+DON_design %>% 
+  group_by(trial2,design) %>% 
+  summarize() %>% 
+  tabyl(design)
+```
+
+```{r}
+library(metafor)
+
+
+mv_incon_DON <- rma.mv(yi, vi,
+  mods = ~fungicide* design,
+  random = list(~ fungicide | factor(trial2)),
+  struct = "UN",
+  method = "ML",
+  data = DON_design)
+mv_incon_DON
+
+anova(mv_incon_DON, btt = 9:14)
+
+```
+
+
+### Sev
+
+```{r}
+dat_sev1 = dat_sev %>% 
+  group_by(trial2) %>% 
+  mutate(n2 = n()) %>% 
+  filter(n2 != 1) %>% 
+  summarise(fungicide1=paste(fungicide, collapse=';')) 
+
+dat_sev1 %>% 
+  tabyl(fungicide1)
+```
+
+Six different designs (here design refers to the set of treatments in the trial) were found in the trials reporting FHB index.
+
+```{r}
+design1 = dat_sev%>% 
+  group_by(trial2) %>% 
+  filter(fungicide  %in% c("aacheck", "Carbendazim", "Metconazol", "Piraclostrobina + metconazole", "Tebuconazole + trifloxistrobina", "Trifloxistrobina + protioconazole + bixafem")) %>% 
+  mutate(n3 = n()) %>% 
+  mutate(design = rep(1, length(fungicide))) %>% 
+  filter(n2 == 6) %>%
+  filter(n3 == 6)
+design1
+
+
+design2 = dat_sev %>% 
+  group_by(trial2) %>% 
+  filter(fungicide  %in% c("aacheck", "Carbendazim", "Metconazol", "Piraclostrobina + metconazole", "Tebuconazole + trifloxistrobina", "Trifloxistrobina + protioconazole", "Trifloxistrobina + protioconazole + bixafem")) %>% 
+  mutate(n3 = n()) %>% 
+  mutate(design = rep(2, length(fungicide))) %>% 
+  filter(n2 == 7) %>%
+  filter(n3 == 7)
+design2
+
+design3 = dat_sev %>% 
+  group_by(trial2) %>% 
+  filter(fungicide  %in% c("aacheck", "Carbendazim", "Piraclostrobina + metconazole", "Tebuconazole + trifloxistrobina", "Trifloxistrobina + protioconazole")) %>% 
+  mutate(n3 = n()) %>% 
+  mutate(design = rep(3, length(fungicide))) %>% 
+  filter(n2 == 5) %>% 
+  filter(n3 == 5)
+design3
+
+design4 = dat_sev %>% 
+  group_by(trial2) %>% 
+  filter(fungicide  %in% c("aacheck", "Carbendazim","Tebuconazole + trifloxistrobina", "Trifloxistrobina + protioconazole")) %>% 
+  mutate(n3 = n()) %>% 
+  mutate(design = rep(4, length(fungicide))) %>% 
+  filter(n2 == 4) %>% 
+  filter(n3 == 4)
+design4
+
+design5 = dat_sev %>% 
+  group_by(trial2) %>% 
+  filter(fungicide  %in% c("aacheck", "Metconazol", "Piraclostrobina + metconazole","Tebuconazole + trifloxistrobina", "Trifloxistrobina + protioconazole + bixafem")) %>% 
+  mutate(n3 = n()) %>% 
+  mutate(design = rep(5, length(fungicide))) %>% 
+  filter(n2 == 5) %>% 
+  filter(n3 == 5)
+design5
+
+design6 = dat_sev %>% 
+  group_by(trial2) %>% 
+  filter(fungicide  %in% c("aacheck", "Metconazol", "Piraclostrobina + metconazole", "Trifloxistrobina + protioconazole + bixafem")) %>% 
+  mutate(n3 = n()) %>% 
+  mutate(design = rep(6, length(fungicide))) %>% 
+  filter(n2 == 4) %>% 
+  filter(n3 == 4)
+design6
+
+sev_design = rbind(design1, design2, design3, design4, design5, design6)
+
+
+sev_design %>% 
+  group_by(trial2,design) %>% 
+  summarize() %>% 
+  tabyl(design)
+```
+
+
+```{r}
+library(metafor)
+
+
+mv_incon_sev <- rma.mv(log_sev, vi_sev,
+  mods = ~fungicide* design,
+  random = list(~ fungicide | factor(trial2)),
+  struct = "UN",
+  method = "ML",
+  data = sev_design)
+mv_incon_sev
+
+anova(mv_incon_sev, btt = 9:14)
+
+```
+
+### Yield
+
+```{r}
+dat_yld1 = dat_yld %>% 
+  group_by(trial2) %>% 
+  summarise(fungicide1=paste(fungicide, collapse=';')) 
+
+dat_yld1 %>% 
+  tabyl(fungicide1)
+```
+
+Four different designs (here design refers to the set of treatments in the trial) were found in the trials reporting yield.
+
+```{r}
+design1 = dat_yld %>% 
+  group_by(trial2) %>% 
+  filter(fungicide  %in% c("aacheck", "Carbendazim", "Metconazol", "Piraclostrobina + metconazole", "Tebuconazole + trifloxistrobina", "Trifloxistrobina + protioconazole")) %>% 
+  mutate(n3 = n()) %>% 
+  mutate(design = rep(1, length(fungicide))) %>% 
+  filter(n2 == 6) %>%
+  filter(n3 == 6)
+design1
+
+
+design2 = dat_yld %>% 
+  group_by(trial2) %>% 
+  filter(fungicide  %in% c("aacheck", "Carbendazim", "Metconazol", "Piraclostrobina + metconazole", "Tebuconazole + trifloxistrobina", "Trifloxistrobina + protioconazole + bixafem")) %>% 
+  mutate(n3 = n()) %>% 
+  mutate(design = rep(2, length(fungicide))) %>% 
+  filter(n2 == 6) %>%
+  filter(n3 == 6)
+design2
+
+design3 = dat_yld %>% 
+  group_by(trial2) %>% 
+  filter(fungicide  %in% c("aacheck", "Carbendazim", "Metconazol", "Piraclostrobina + metconazole", "Tebuconazole + trifloxistrobina", "Trifloxistrobina + protioconazole", "Trifloxistrobina + protioconazole + bixafem")) %>% 
+  mutate(n3 = n()) %>% 
+  mutate(design = rep(3, length(fungicide))) %>% 
+  filter(n2 == 7) %>% 
+  filter(n3 == 7)
+design3
+
+design4 = dat_yld %>% 
+  group_by(trial2) %>% 
+  filter(fungicide  %in% c("aacheck", "Carbendazim", "Piraclostrobina + metconazole", "Tebuconazole + trifloxistrobina", "Trifloxistrobina + protioconazole")) %>% 
+  mutate(n3 = n()) %>% 
+  mutate(design = rep(4, length(fungicide))) %>% 
+  filter(n2 == 5) %>% 
+  filter(n3 == 5)
+design4
+
+
+yld_design = rbind(design1, design2, design3, design4)
+
+
+yld_design %>% 
+  group_by(trial2,design) %>% 
+  summarize() %>% 
+  tabyl(design)
+```
+```{r}
+library(metafor)
+mv_incon_yld <- rma.mv(mean_yld, v_yld1,
+  mods = ~fungicide * design,
+  random = list(~ fungicide | factor(trial2)),
+  struct = "UN",
+  method = "ML",
+  control = list(optimizer = "nlm"),
+  data = yld_design)
+mv_incon_yld
+anova(mv_incon_yld, btt = 9:14)
+
+```
+
+
+# Plots
+
+## Histogramas
+
+```{r fig.height=8, fig.width=5, warning=FALSE}
+library(ggthemes)
+library(cowplot)
+## Log of the Effect-sizes
+dat <- dat %>%
+  mutate(
+    log_sev = log(sev),
+    log_DON = log(don)) %>% 
+  filter(sev<100)
+
+
+hist_log_sev <- ggplot(dat, aes(log_sev)) + 
+  geom_histogram(bin = 100, binwidth = 0.7, color = "black" , fill = "black",
+                 alpha = 0.1) + 
+  theme_half_open()+
+  theme(axis.title = element_text(size=12),
+        axis.text = element_text(size=12))+
+  labs(x = "log(FHB Index)", y = "Frequency")
+
+
+hist_sev <- ggplot(dat, aes(sev)) + 
+  geom_histogram(bin = 100, binwidth = 8, color = "black" , fill = "black",
+                 alpha = 0.1) + 
+  theme_half_open()+
+  theme(axis.title = element_text(size=12),
+        axis.text = element_text(size=12))+
+  labs(x = "FHB Index (%))", y = "Frequency")
+
+hist_log_don <- ggplot(dat, aes(log_DON)) + 
+  geom_histogram(bin = 100, binwidth = 0.5, color = "black" , fill = "black",
+                 alpha = 0.1) + 
+  theme_half_open()+
+  theme(axis.title = element_text(size=12),
+        axis.text = element_text(size=12))+
+  labs(x = "log(DON)", y = "Frequency")
+
+
+hist_don <- ggplot(dat, aes(don)) + 
+  geom_histogram(bin = 100, binwidth = 1200, color = "black" , fill = "black",
+                 alpha = 0.1) + 
+  theme_half_open()+
+  theme(axis.title = element_text(size=12),
+        axis.text = element_text(size=12))+
+  labs(x = "DON (µg/kg)", y = "Frequency")
+
+
+hist_yld <- ggplot(dat, aes(yld)) + 
+  geom_histogram(bin = 100, binwidth = 800, color = "black" , fill = "black",
+                 alpha = 0.1) + 
+  theme_half_open()+
+  theme(axis.title = element_text(size=12),
+        axis.text = element_text(size=12))+
+  labs(x = "Yield (Kg/ha)", y = "Frequency")
+
+
+
+library(cowplot)
+hist_plot <- plot_grid(hist_don, hist_log_don, hist_sev, hist_log_sev, hist_yld, labels = c("A", "B", "C", "D", "E"), nrow = 3, align = "V")
+hist_plot
+
+
+ggsave("figs/histograms.png", width = 8, height = 10, dpi = 600, bg = "white")
+```
+
+## Boxplots
+
+### Severity
+
+```{r message=FALSE, warning=FALSE}
+
+library(plyr)
+dat_sev$fungicide <- revalue(dat_sev$fungicide, c("aacheck" = "CHECK"))
+dat_sev$fungicide <- revalue(dat_sev$fungicide, c("Carbendazim" = "CARB"))
+dat_sev$fungicide <- revalue(dat_sev$fungicide, c("Metconazol" = "METC"))
+dat_sev$fungicide <- revalue(dat_sev$fungicide, c("Piraclostrobina + metconazole" = "PYRA+METC"))
+dat_sev$fungicide <- revalue(dat_sev$fungicide, c("Tebuconazole + trifloxistrobina" = "TEBU+TFLX"))
+dat_sev$fungicide <- revalue(dat_sev$fungicide, c("Trifloxistrobina + protioconazole" = "TFLX+PROT"))
+dat_sev$fungicide <- revalue(dat_sev$fungicide, c("Trifloxistrobina + protioconazole + bixafem" = "TFLX+PROT+BIXF"))
+detach("package:plyr", unload = TRUE)
+
+
+dat_sev <- dat_sev  
+dat_sev$fungicide <- factor(dat_sev$fungicide, levels = c("CHECK", "TEBU+TFLX", "CARB", "TFLX+PROT+BIXF","TFLX+PROT", "PYRA+METC", "METC" ))
+
+box_state_sev = dat_sev %>%
+  filter(fungicide == "CHECK") %>%
+  ggplot(aes(factor(state), mean_sev)) +
+  geom_jitter(width = 0.15, size = 2, color = "gray85", alpha = 1) +
+  geom_boxplot(size = 1, outlier.shape = NA, fill = NA, color = "#E05313", width = 0.5) +
+  theme_minimal_hgrid(font_size = 10)+
+  labs(x = "State", y = "") +
+  scale_y_continuous(breaks = c(0,20,40,60,80,100), limits = c(0,100))+
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.y = element_text(size=12, face = "bold"),
+        panel.border = element_rect(color = "gray60", size=1),
+         axis.text.y = element_text(size=10)
+        # axis.title.y = element_text(size=14, face = "bold")
+        )
+box_state_sev
+
+box_sev <- ggplot(dat_sev, aes(fungicide, mean_sev)) +
+  geom_jitter(width = 0.15, size = 2, color = "gray85", alpha = 1) +
+  geom_boxplot(size = 1, outlier.shape = NA, fill = NA, color = "#E05313", width = 0.5) +
+  theme_minimal_hgrid(font_size = 10)+
+  labs(x = "Fungicide", y = "FHB Severity (%)") +
+  scale_y_continuous(breaks = c(0,20,40,60,80,100), limits = c(0,100))+
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.y = element_text(size=12, face = "bold"),
+        panel.border = element_rect(color = "gray60", size=1),
+       axis.text.y = element_text(size=10)
+        # axis.title.y = element_text(size=14, face = "bold")
+        )
+box_sev
+
+sev_year <- dat_sev %>%
+  filter(fungicide == "CHECK") %>% 
+  ggplot(aes(factor(year_trial), mean_sev)) +
+  geom_jitter(width = 0.15, size = 2, color = "gray85", alpha = 1) +
+  geom_boxplot(size = 1, outlier.shape = NA, fill = NA, color = "#E05313", width = 0.5) +
+  theme_minimal_hgrid(font_size = 10)+
+  labs(x = "Year", y = "FHB severity (%) in the CHECK") +
+  scale_y_continuous(breaks = c(0,20,40,60,80,100), limits = c(0,100))+
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.y = element_text(size=12, face = "bold"),
+        panel.border = element_rect(color = "gray60", size=1),
+       axis.text.y = element_text(size=10)
+        # axis.title.y = element_text(size=14, face = "bold")
+        )
+sev_year
+
+sev_sum <- dat_sev %>%
+  filter(fungicide == "CHECK") %>% 
+  filter(mean_sev<101) %>% 
+  filter(state == "PR")
+summary(sev_sum$mean_sev) 
+```
+
+### DON
+
+```{r message=FALSE, warning=FALSE}
+
+library(plyr)
+dat_DON$fungicide <- revalue(dat_DON$fungicide, c("aacheck" = "CHECK"))
+dat_DON$fungicide <- revalue(dat_DON$fungicide, c("Carbendazim" = "CARB"))
+dat_DON$fungicide <- revalue(dat_DON$fungicide, c("Metconazol" = "METC"))
+dat_DON$fungicide <- revalue(dat_DON$fungicide, c("Piraclostrobina + metconazole" = "PYRA+METC"))
+dat_DON$fungicide <- revalue(dat_DON$fungicide, c("Tebuconazole + trifloxistrobina" = "TEBU+TFLX"))
+dat_DON$fungicide <- revalue(dat_DON$fungicide, c("Trifloxistrobina + protioconazole" = "TFLX+PROT"))
+dat_DON$fungicide <- revalue(dat_DON$fungicide, c("Trifloxistrobina + protioconazole + bixafem" = "TFLX+PROT+BIXF"))
+detach("package:plyr", unload = TRUE)
+
+
+dat_DON <- dat_DON  
+dat_DON$fungicide <- factor(dat_DON$fungicide, levels = c("CHECK", "TEBU+TFLX", "CARB", "TFLX+PROT+BIXF","TFLX+PROT", "PYRA+METC", "METC" ))
+ 
+
+box_state_DON = dat_DON %>%
+  filter(fungicide == "CHECK") %>%
+  ggplot(aes(factor(state), mean_don)) +
+  geom_jitter(width = 0.15, size = 2, color = "gray85", alpha = 1) +
+  geom_boxplot(size = 1, outlier.shape = NA, fill = NA, color = "#7E0021", width = 0.5) +
+  theme_minimal_hgrid(font_size = 10)+
+  labs(x = "State", y = "") +
+  scale_y_continuous(breaks = c(0,2000,4000,6000, 8000), limits = c(0, 8000))+
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.border = element_rect(color = "gray60", size=1)
+        # axis.text.y = element_text(size=12),
+        # axis.title.y = element_text(size=14, face = "bold")
+        )
+box_state_DON
+
+box_DON <- ggplot(dat_DON, aes(fungicide, mean_don)) +
+  geom_jitter(width = 0.15, size = 2, color = "gray85", alpha = 1) +
+  geom_boxplot(size = 1, outlier.shape = NA, fill = NA, color = "#7E0021", width = 0.5) +
+  theme_minimal_hgrid(font_size = 10)+
+  labs(x = "Fungicide", y = "DON (µg/kg)") +
+  scale_y_continuous(breaks = c(0,2000,4000,6000, 8000), limits = c(0, 8000))+
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.y = element_text(size=12, face = "bold"),
+        panel.border = element_rect(color = "gray60", size=1)
+        # axis.text.y = element_text(size=12),
+        # axis.title.y = element_text(size=14, face = "bold")
+        )
+box_DON
+
+dat_DON1 <- dat5
+DON_year <- dat_DON1 %>%
+  filter(fungicide == "aacheck") %>% 
+  ggplot(aes(factor(year_trial), mean_don)) +
+  geom_jitter(width = 0.15, size = 2, color = "gray85", alpha = 1) +
+  geom_boxplot(size = 1, outlier.shape = NA, fill = NA, color = "#7E0021", width = 0.5) +
+  theme_minimal_hgrid(font_size = 10)+
+  labs(x = "Year", y = "DON (µg/kg) in the CHECK") +
+  scale_y_continuous(breaks = c(0,2000,4000,6000, 8000), limits = c(0, 8000))+
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        panel.border = element_rect(color = "gray60", size=1),
+       axis.text.y = element_text(size=10),
+       axis.title.y = element_text(size=12, face = "bold")
+        )
+DON_year
+
+don_sum <- dat_DON %>%
+  filter(fungicide == "aacheck") %>% 
+  filter(state == "PR")
+summary(don_sum$mean_don) 
+```
+
+### Yield
+
+```{r, message=FALSE, warning=FALSE}
+
+library(plyr)
+dat_yld$fungicide <- revalue(dat_yld$fungicide, c("aacheck" = "CHECK"))
+dat_yld$fungicide <- revalue(dat_yld$fungicide, c("Carbendazim" = "CARB"))
+dat_yld$fungicide <- revalue(dat_yld$fungicide, c("Metconazol" = "METC"))
+dat_yld$fungicide <- revalue(dat_yld$fungicide, c("Piraclostrobina + metconazole" = "PYRA+METC"))
+dat_yld$fungicide <- revalue(dat_yld$fungicide, c("Tebuconazole + trifloxistrobina" = "TEBU+TFLX"))
+dat_yld$fungicide <- revalue(dat_yld$fungicide, c("Trifloxistrobina + protioconazole" = "TFLX+PROT"))
+dat_yld$fungicide <- revalue(dat_yld$fungicide, c("Trifloxistrobina + protioconazole + bixafem" = "TFLX+PROT+BIXF"))
+detach("package:plyr", unload = TRUE)
+
+
+dat_yld <- dat_yld  
+dat_yld$fungicide <- factor(dat_yld$fungicide, levels = c("CHECK", "TEBU+TFLX", "CARB", "TFLX+PROT+BIXF","TFLX+PROT", "PYRA+METC", "METC" ))
+
+box_state_yld = dat_yld %>% 
+ filter(fungicide == "CHECK") %>%
+  ggplot(aes(factor(state), mean_yld)) +
+  geom_jitter(width = 0.15, size = 2, color = "gray85", alpha = 1) +
+  geom_boxplot(size = 1, outlier.shape = NA, fill = NA, color = "#4D1C06", width = 0.5) +
+  theme_minimal_hgrid(font_size = 10)+
+  labs(x = "State", y = "") +
+  scale_y_continuous(breaks = c(0,2000,4000,6000, 8000), limits = c(0, 8000))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=10),
+        axis.title.x = element_text(size=12, face = "bold"),
+        axis.title.y = element_blank(),
+        panel.border = element_rect(color = "gray60", size=1)
+        # axis.text.y = element_text(size=12),
+        # axis.title = element_text(size=14, face = "bold")
+         )
+box_state_yld
+
+
+box_yld <- ggplot(dat_yld, aes(fungicide, mean_yld)) +
+  geom_jitter(width = 0.15, size = 2, color = "gray85", alpha = 1) +
+  geom_boxplot(size = 1, outlier.shape = NA, fill = NA, color = "#4D1C06", width = 0.5) +
+  theme_minimal_hgrid(font_size = 10)+
+  labs(x = "Fungicide", y = "Yield (kg/ha)") +
+  scale_y_continuous(breaks = c(0,2000,4000,6000, 8000), limits = c(0, 8000))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=10),
+        axis.title.x = element_text(size=12, face = "bold"),
+        axis.title.y = element_text(size=12, face = "bold"),
+        panel.border = element_rect(color = "gray60", size=1)
+        # axis.text.y = element_text(size=12),
+        # axis.title = element_text(size=14, face = "bold")
+        )
+box_yld
+
+yld_year <- dat_yld %>%
+  filter(fungicide == "CHECK") %>%
+  ggplot(aes(factor(year_trial), mean_yld)) +
+  geom_jitter(width = 0.15, size = 2, color = "gray85", alpha = 1) +
+  geom_boxplot(size = 1, outlier.shape = NA, fill = NA, color = "#4D1C06", width = 0.5) +
+  theme_minimal_hgrid(font_size = 10)+
+  labs(x = "Crop Season", y = "Yield (kg/ha) in the CHECK") +
+  scale_y_continuous(breaks = c(0,2000,4000,6000, 8000), limits = c(0, 8000))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=10),
+        axis.title.x = element_text(size=12, face = "bold"),
+        axis.title.y = element_text(size=12, face = "bold"),
+        panel.border = element_rect(color = "gray60", size=1),
+        axis.text.y = element_text(size=10))        
+yld_year
+
+yld_sum <- dat_yld %>%
+  filter(fungicide == "aacheck") %>% 
+  filter(year_trial == 2018)
+summary(yld_sum$mean_yld) 
+```
+### Combo_Box
+
+```{r fig.height=10, fig.width=12, warning=FALSE}
+library(patchwork)
+
+sev_year + box_state_sev + box_sev +
+  DON_year + box_state_DON + box_DON + 
+  yld_year + box_state_yld + box_yld + 
+  plot_layout(heights = c(1, 1,1),
+              widths = c(.7,.3,1))+
+  plot_annotation(tag_levels = 'A') &
+  theme(panel.border = element_blank())
+
+
+ggsave("figs/boxplots.png", width = 12, height = 10, dpi = 600, bg = "white")
+```
+
+
+## Severity x Yield
+
+```{r fig.height=5, fig.width=8}
+library(cowplot)
+library(ggrepel)
+library(tidyverse)
+library(ggthemes)
+
+plot1 = full_join(efficacy_sev, yield_res, by = "fungicide")
+  
+ 
+plot1$fungicide <- factor(plot1$fungicide, levels = c("METC", "PYRA+METC", "TFLX+PROT", "TFLX+PROT+BIXF", "CARB", "TEBU+TFLX"))
+
+plot1 = plot1 %>% 
+  ggplot(aes(efficacy, yld)) + 
+  geom_errorbar(aes(ymin = yld_inf, ymax = yld_sup, color = fungicide), alpha = 0.8, width=0, size= 0.8)+
+  geom_errorbarh(aes(xmin = efficacy_lw, xmax = efficacy_up, color = fungicide), alpha = 0.8, height= 0, size= 0.8)+
+  geom_point(aes(efficacy, yld, color = fungicide), size = 3)+
+  #scale_y_continuous(breaks=c(400,600,800,1000,1200), limits=c(400,1200))+
+  scale_x_continuous(breaks=c(20,40,60,80), limits=c(20,80))+
+  theme_minimal_grid()+
+  scale_color_calc()+
+  labs(y = "Yield response (kg/ha)", x = "FHB severity reduction (%)", color = "Fungicide")+
+  theme(axis.text=element_text(size=12), 
+        axis.title=element_text(size=14, face = "bold"),
+        legend.position = "right",
+        legend.title.align = 0.5,
+        legend.title = element_text(size=12, face = "bold"))
+
+ggsave("figs/sev_yld.png", width = 8, height = 5, dpi = 600, bg = "white")
+```
+
+
+## DON x Yield
+
+```{r fig.height=5, fig.width=8}
+library(cowplot)
+library(ggrepel)
+library(tidyverse)
+library(ggthemes)
+
+plot2 = full_join(efficacy_don, yield_res, by = "fungicide")
+  
+ 
+plot2$fungicide <- factor(plot2$fungicide, levels = c("METC", "PYRA+METC", "TFLX+PROT", "TFLX+PROT+BIXF", "CARB", "TEBU+TFLX"))
+
+plot2 = plot2 %>% 
+  ggplot(aes(efficacy, yld)) + 
+  geom_errorbar(aes(ymin = yld_inf, ymax = yld_sup, color = fungicide), alpha = 0.8, width=0, size= 0.8)+
+  geom_errorbarh(aes(xmin = efficacy_lw, xmax = efficacy_up, color = fungicide), alpha = 0.8, height= 0, size= 0.8)+
+  geom_point(aes(efficacy, yld, color = fungicide), size = 3)+
+  #scale_y_continuous(breaks=c(400,600,800,1000,1200), limits=c(400,1200))+
+  scale_x_continuous(breaks=c(20,40,60,80), limits=c(20,80))+
+  theme_minimal_grid()+
+  scale_color_calc()+
+  labs(y = "Yield response (kg/ha)", x = "DON reduction (%)", color = "Fungicide")+
+  theme(axis.text=element_text(size=12), 
+        axis.title=element_text(size=14, face = "bold"),
+        legend.position = "right",
+        legend.title.align = 0.5,
+        legend.title = element_text(size=12, face = "bold"))
+
+ggsave("figs/DON_yld.png", width = 8, height = 5, dpi = 600, bg = "white")
+```
+
+```{r}
+library(patchwork)
+plot1 + plot2 + plot_annotation(tag_levels = 'A') + plot_layout(guides = "collect") & theme(legend.position = "right")
+
+ggsave("figs/combo.png", height=7, width=13, dpi = 600, bg = "white")
+```
+
